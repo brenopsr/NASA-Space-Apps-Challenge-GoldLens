@@ -9,14 +9,49 @@ from typing import List, Optional
 app = Flask(__name__)
 CORS(app)
 
+
+def _first_existing_path(candidates):
+    """Return the first existing path from *candidates* (ignoring ``None``)."""
+    for path in candidates:
+        if path and os.path.exists(path):
+            return path
+    return None
+
+
+def _default_model_path():
+    """Try to infer a usable model path bundled with the repository."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(here)
+    candidates = [
+        os.getenv("MODEL_PATH"),
+        os.path.join(repo_root, "models", "rf_model.pkl"),
+        os.path.join(here, "rf_300.pkl"),
+        os.path.join(here, "artifacts", "modelo_final.pkl"),
+        os.path.join(repo_root, "model.pkl"),
+    ]
+    return _first_existing_path(candidates)
+
+
+def _default_features_path():
+    """Infer a default features file if one is available."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(here)
+    candidates = [
+        os.getenv("FEATURES_PATH"),
+        os.path.join(repo_root, "models", "rf_features.pkl"),
+        os.path.join(here, "features.pkl"),
+        os.path.join(here, "artifacts", "features.pkl"),
+    ]
+    return _first_existing_path(candidates)
+
 # ---------------------------
 # CLI / ENV config
 # ---------------------------
 def parse_args():
     p = argparse.ArgumentParser(description="GoldLens - API de predição (Flask)")
-    p.add_argument("--model", type=str, default=os.getenv("MODEL_PATH"),
+    p.add_argument("--model", type=str, default=_default_model_path(),
                    help="Caminho do modelo .pkl (ou env MODEL_PATH)")
-    p.add_argument("--features", type=str, default=os.getenv("FEATURES_PATH"),
+    p.add_argument("--features", type=str, default=_default_features_path(),
                    help="Caminho do .pkl com lista de features (opcional). Se ausente, usa feature_names_in_ do modelo.")
     p.add_argument("--host", type=str, default=os.getenv("HOST", "0.0.0.0"))
     p.add_argument("--port", type=int, default=int(os.getenv("PORT", "5000")))
@@ -158,15 +193,19 @@ def predict():
 @app.route("/metrics_summary", methods=["GET"])
 def get_metrics_summary():
     try:
-        model_path = ARGS.model or os.getenv("MODEL_PATH")
+        model_path = ARGS.model or _default_model_path()
         if not model_path:
             return jsonify({"error": "MODEL_PATH/--model não definido."}), 400
         model_dir = os.path.dirname(os.path.abspath(model_path))
         file_path = os.path.join(model_dir, "metrics_summary.txt")
         if not os.path.exists(file_path):
             return jsonify({"error": "Resumo de métricas não encontrado."}), 404
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except UnicodeDecodeError:
+            with open(file_path, "r", encoding="latin-1") as f:
+                content = f.read()
         return Response(content, mimetype="text/plain")
     except Exception as e:
         return jsonify({"error": f"Erro ao ler métricas: {str(e)}"}), 400
@@ -193,13 +232,13 @@ def _load_features(features_path: Optional[str], model) -> List[str]:
 def bootstrap():
     global ARGS, rf, FEATURES
     ARGS = parse_args()
-    model_path = ARGS.model or os.getenv("MODEL_PATH")
+    model_path = ARGS.model or _default_model_path()
     if not model_path or not os.path.exists(model_path):
         raise FileNotFoundError(f"Modelo não encontrado: {model_path}")
     rf = joblib.load(model_path)
     if not hasattr(rf, "predict_proba"):
         raise ValueError("O modelo carregado não possui predict_proba().")
-    features_path = ARGS.features or os.getenv("FEATURES_PATH")
+    features_path = ARGS.features or _default_features_path()
     FEATURES = _load_features(features_path, rf)
 
 if __name__ == "__main__":
